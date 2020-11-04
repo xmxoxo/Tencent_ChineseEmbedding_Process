@@ -8,8 +8,8 @@
 @Description: 词向量查询工具
 """
 
-import warnings
-warnings.filterwarnings("ignore")
+#import warnings
+#warnings.filterwarnings("ignore")
 
 import argparse
 import os
@@ -20,11 +20,16 @@ import time
 import logging
 import numpy as np
 
+from flask import Flask, request, render_template, jsonify, abort
+from flask import url_for, Response
 
-parser = argparse.ArgumentParser(description='命令行查询工具')
-parser.add_argument('--datfile', default='', required=True, type=str, help='数据文件名') #
-parser.add_argument('--topn', default=5, type=int, help='返回匹配条数')
+parser = argparse.ArgumentParser(description='腾讯词向量搜索工具')
+parser.add_argument('-api', default='', required=True, type=str, help='服务端API') #
+parser.add_argument('-topn', default=5, type=int, help='返回匹配条数')
 args = parser.parse_args()
+
+api_url = args.api
+
 #-----------------------------------------
 def MemoryUsed ():
     # 查看当前进程使用的内存情况
@@ -32,79 +37,140 @@ def MemoryUsed ():
     process = psutil.Process(os.getpid())
     info = 'Used Memory: %.3f MB' % (process.memory_info().rss / 1024 / 1024 )
     return info
-
 #-----------------------------------------
 
-# 余弦距离
-CosSim_dot = lambda a,b: np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
-
-# 读入文件
-def readtxtfile(fname,encoding='utf-8'):
-    pass
-    try:
-        with open(fname,'r',encoding=encoding) as f:  
-            data=f.read()
-        return data
-    except :
-        return ''
-
-
-# 向量搜索API
-api_url = 'http://192.168.15.111:7800'
-
 # 根据向量或者索引号，返回最相似的结果；
-def Vector_search (vector, topn=5, index=None):
+def Vector_search (vector='', topn=5, index='', txt=''):
     url=api_url+'/api/v0.1/query'
     ret = [[], []]
     try:
-        dt = {'v': str(list(vector)), 'n':topn}
-        if index:
-            dt['i'] = index 
+        dt = {'v': str(list(vector)), 'n':topn, 'i':index, 's':txt}
         res = requests.post(url, data=dt, timeout=2)
         res.encoding = 'utf-8'
         res = json.loads(res.text)
-        #print(res)
         if res['result'] == 'OK':
-            ret = json.loads(res["values"])
+            values = json.loads(res["values"])
+            txt = eval(res["txt"])
+            ret = [(txt[i],values[0][0][i])  for i in range(len(txt))] #
+        else:
+            print(res)
         return ret
     except Exception as e:
         print(e)
         return ret
 
 # 根据索引号查询句子的向量
-def Vector_index (index):
+def Vector_index (index=0, txt=''):
     url=api_url+'/api/v0.1/vector'
     ret = []
     try:
-        dt = {'index': index}
+        dt = {'index': index,'txt': txt}
         res = requests.post(url, data=dt, timeout=2)
         res.encoding = 'utf-8'
         res = json.loads(res.text)
+        #print(res)
         if res['result'] == 'OK':
             ret = json.loads(res["vector"])
         return ret
     except Exception as e:
+        print('Error at Vector_index')
         print(e)
         return ret
 
-# 加载数据文件处理成字典
-def make_dict (filename):
+# 调用接口， 计算两个词的相似度
+def Vector_sim (a,b):
+    url=api_url+'/api/v0.1/sim'
+    ret = ''
     try:
-        txts = readtxtfile(filename).splitlines()
-        sentences = []
-        for x in txts:
-            if '\t' in x:
-                sent = x.split('\t')[1]
-            else:
-                sent = x
-            sentences.append(sent)
-    except :
-        sentences = None
-    return sentences
+        dt = {'words': ('%s|%s' % (a,b))}
+        res = requests.post(url, data=dt, timeout=2)
+        res.encoding = 'utf-8'
+        res = json.loads(res.text)
+        if res['result'] == 'OK':
+            ret = json.loads(res["simcos"])
+        return ret
+    except Exception as e:
+        print(e)
+        return ret
+    
 
 
-# 命令行主方法 
+# 实现 "国王-男人+女人=皇后" 的运算
+# 传入三个词语
+def Vecotr_opera (a,b,c):
+    ret = []
+    try:
+
+        vec_a = np.array(Vector_index(txt=a))
+        vec_b = np.array(Vector_index(txt=b))
+        vec_c = np.array(Vector_index(txt=c))
+        
+        # 计算向量差
+        vec = vec_a - vec_b + vec_c
+        ret = Vector_search(vector=vec, topn=args.topn)
+        # 在结果中过滤掉原结果
+        ret = filter(lambda x:x[0] not in [a,b,c], ret)
+        return ret
+    except Exception as e:
+        return ret
+
+# 启动HTTP服务
+def HTTPServer ():
+    pass
+
+
+
+# 命令行方法 
 def main_cli ():
+    # 显示内存使用
+    logging.info(MemoryUsed())
+
+    print('-'*40)
+    print('腾讯词向量搜索工具')
+    print('''可输入多个词语，词语之间用","分隔; 
+输入1个词：查询相似的词；
+输入2个词：查询两个词的相似度；
+输入3个词：计算A-B+C,例如：国王-男人+女人=皇后
+     ''')
+
+    while 1:
+        try:
+            print('-'*40)
+            strInput = input('请输入词语(Q退出):').strip()
+        except :
+            strInput = ''
+        if strInput in [''] : continue
+        if strInput in ['Q', 'q'] : break
+        start = time.time()
+
+        # 处理输入的单词
+        strInput = strInput.strip()
+        lstsent = tuple(filter(None, strInput.split("，")))[:3]
+        
+        if len(lstsent) == 1:
+            logging.info('查询词语的近义词:%s ' % lstsent[0])
+            ret = Vector_search(txt=lstsent[0], topn=args.topn)
+            if ret:
+                ret = '\n'.join( [str(x) for x in ret])
+                logging.info('查询结果:\n%s' % str(ret) )
+            else:
+                logging.info('查询错误:%s' % str(ret) )                
+        if len(lstsent) == 2:
+            logging.info('查询 %s 与 %s 的相似度:' % lstsent )
+            ret = Vector_sim (lstsent[0], lstsent[1])
+            logging.info('相似度:%s' %  str(ret))
+        if len(lstsent) == 3:
+            logging.info('向量加减:%s-%s+%s' % lstsent)
+            ret = Vecotr_opera (lstsent[0], lstsent[1], lstsent[2])
+            if ret:
+                ret = '\n'.join( [str(x) for x in ret])
+                logging.info('查询结果:\n%s' % str(ret))
+            else:
+                logging.info('查询错误, 可能是词库未收录该词，请加载大词库。' )
+
+        logging.info('整体用时:%.2f 毫秒' % ((time.time() - start)*1000) )
+
+if __name__ == '__main__':
     #################################################################################################
     # 指定日志
     logging.basicConfig(level = logging.DEBUG,
@@ -122,87 +188,5 @@ def main_cli ():
     console.setFormatter(formatter)
     logging.getLogger('').addHandler(console)
     #################################################################################################
-
-    # 读入数据文件并处理成字典
-    print('正在加载数据，请稍候...')
-    #sentences, dic_sentences = make_dict(args.datfile)
-    sentences = readtxtfile(args.datfile).splitlines()
-    if not sentences:
-        print('加载数据失败,请检查数据文件...')
-        sys.exit()
-
-    # 显示内存使用
-    logging.info(MemoryUsed())
-
-    while 1:
-        try:
-            print('-'*40)
-            strInput = input('请输入词语(用"|"分隔,Q退出):').strip()
-        except :
-            strInput = ''
-        if strInput  in [''] : continue
-        if strInput in ['Q', 'q'] : break
-        start = time.time()
-
-        word_a, word_b = '',''
-        index_a, index_b = None, None
-        if strInput.find('|')>=0:
-            lstsent = strInput.split('|')[:2]
-            word_a, word_b = lstsent
-            # 如果是数字，就转换成索引号
-            if word_a.isdigit():
-                index_a = int(word_a)
-                word_a = sentences[index_a]
-            if word_b.isdigit():
-                index_b = int(word_b)
-                word_b = sentences[index_b]
-        else:
-            word_a = strInput
-            if word_a.isdigit():
-                index_a = int(word_a)
-                word_a = sentences[index_a]
-
-        logging.info('句子: %s' % word_a )
-        if word_b:
-            logging.info('句子2: %s' % word_a)
-
-        # 在字典里查找词
-        if not index_a:
-            try:
-                index_a = sentences.index(word_a)
-                index_b = sentences.index(word_a)
-            except :
-                pass 
-        
-        if not index_a:
-            print('词库中未到到该词...')
-            continue
-        
-        if index_a and index_b:
-            '''
-            # 两个词求相似度
-            vec_a = Vector_index(index_a)
-            vec_b = Vector_index(index_b)
-            s = CosSim_dot(vec_a, vec_b)
-            '''
-            # 直接使用API接口
-            print('相似度: %f' % s)
-        
-        else:
-            # 词向量搜索
-            ret = Vector_search('', topn=args.topn, index=index_a)
-            logging.info(ret)
-            if not ret:
-                print('服务端返回出错...')
-                continue
-
-            # 找到对应的句子
-            ret_sent = [sentences[i] for i in ret[1]]
-            logging.info( '返回结果'.center(40,'-') + '\n' + '\n'.join(ret_sent))
-        
-        logging.info('[整体用时:%.2f 毫秒]' % ((time.time() - start)*1000) )
-
-
-if __name__ == '__main__':
-    pass
+    
     main_cli()
